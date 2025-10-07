@@ -14,3 +14,21 @@ CREATE TABLE accounts(
 )
 --DROP SEQUENCE IF EXISTS account_number_seq;
 --DROP TABLE accounts CASCADE 
+
+-- 1. Drop existing sequence
+DROP SEQUENCE IF EXISTS account_number_seq CASCADE;
+
+-- 2. Recreate with MAXVALUE
+CREATE SEQUENCE account_number_seq 
+    START 1000000000
+    MAXVALUE 9999999999
+    NO CYCLE;
+
+-- 3. Reconnect to accounts table
+ALTER TABLE accounts 
+    ALTER COLUMN account_number SET DEFAULT nextval('account_number_seq');
+
+-- 4. Add safety constraint
+ALTER TABLE accounts 
+    ADD CONSTRAINT check_account_number_length 
+    CHECK (account_number <= 9999999999);

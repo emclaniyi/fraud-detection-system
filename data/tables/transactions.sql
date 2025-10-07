@@ -1,15 +1,15 @@
 CREATE TABLE transactions(
-	trx_id SERIAL PRIMARY KEY,
-	source_account_id INT NOT NULL REFERENCES accounts(account_id),
-	beneficiary_account_id  INT REFERENCES accounts(account_id),
+	trx_id BIGINT PRIMARY KEY,
+	source_account_id BIGINT NOT NULL REFERENCES accounts(account_id),
+	beneficiary_account_id  BIGINT REFERENCES accounts(account_id),
 	beneficiary_bank VARCHAR(100),
 	trx_type VARCHAR(20) NOT NULL, -- transfer, deposit, withdrawal
-	amount NUMERIC(12,2) NOT NULL,
+	amount NUMERIC(20,2) NOT NULL,
 	currency CHAR(3) NOT NULL DEFAULT 'NGN',
 	channel VARCHAR(50), -- mobile, web, ...
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
     narration TEXT,
-    reference_id VARCHAR(50) UNIQUE,
+    reference_id TEXT UNIQUE,
 	device_ip INET,
 	geo_lat DOUBLE PRECISION NOT NULL,
 	geo_long DOUBLE PRECISION NOT NULL,
@@ -17,6 +17,7 @@ CREATE TABLE transactions(
 	auth_result BOOLEAN DEFAULT 'FALSE',
     created_at TIMESTAMPTZ DEFAULT now(),
     processed_at TIMESTAMPTZ,
-    is_fraud BOOLEAN DEFAULT FALSE
+    is_fraud BOOLEAN DEFAULT FALSE,
+	reason TEXT
 )
 --DROP TABLE transactions CASCADE

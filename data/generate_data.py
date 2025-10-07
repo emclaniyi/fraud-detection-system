@@ -99,12 +99,13 @@ class FraudDataGenerator:
                 'submission_id': user['user_id'],
                 'user_id': user['user_id'],
                 'id_type': id_type,
+                'id_num_hash': hashlib.sha256(id_num.encode()).hexdigest(),
                 'doc_issue_country': doc_issue_country,
                 'doc_issue_date': fake.date_between(start_date='-10y', end_date='-1y'),
                 'selfie_hash_result': 'PASS' if random.random() > 0.1 else 'FAIL',
                 'created_at': user['signup_ts'],
                 'processed_at': user['signup_ts'] + timedelta(hours=random.randint(1, 48)),
-                'status': random.choice(['approved', 'pending', 'rejected'], p=[0.85, 0.10, 0.05]),
+                'status': np.random.choice(['approved', 'pending', 'rejected'], p=[0.85, 0.10, 0.05]),
                 'risk_score': min(base_risk, 100),
                 'reason': 'Auto-approved' if base_risk < 50 else 'Manual review required',
                 'device_id': user_devices[0]['device_id'] if user_devices else None,
@@ -130,9 +131,9 @@ class FraudDataGenerator:
                 account = {
                     'account_id': account_id,
                     'user_id': user['user_id'],
-                    'account_number': 'DE' + account_number,
+                    'account_number': account_number,
                     'account_type': random.choice(['savings', 'current', 'loan']),
-                    'currency': 'EURO',
+                    'currency': 'EUR',
                     'balance': round(random.uniform(1000, 500000), 2),
                     'open_ts': user['signup_ts'] + timedelta(days=random.randint(0, 7)),
                     'close_ts': None,
@@ -200,9 +201,10 @@ class FraudDataGenerator:
             user_devices = [d for d in self.devices if d['user_id'] == user['user_id']]
 
             hour = np.random.choice(range(24), p=self._hour_distribution())
-            trx_ts = current_date + timedelta(hours=hour, minutes=random.randint(0, 59))
+            trx_ts = current_date + timedelta(hours=int(hour), minutes=random.randint(0, 59))
 
-            amount = np.random.lognormal(np.log(profile['baseline_amount_mu']), 0.5)
+            amount = np.random.lognormal(np.log(profile['baseline_amount_mu'] / 10), 0.5)
+            amount = min(amount, 50000)
 
             # Location logic
             if random.random() < 0.9:
@@ -309,14 +311,14 @@ class FraudDataGenerator:
                 'source_account_id': source_account['account_id'],
                 'beneficiary_account_id': random.choice(self.accounts)['account_id'] if random.random() > 0.3 else None,
                 'beneficiary_bank': random.choice(
-                    ['Deutsche Bank', 'Commerzbank', 'N26', 'Revolut', 'Wise']) if random.random() > 0.5 else None,
+                    ['Lala Bank', 'Czabank', 'B32', 'Devolt', 'Wiser']) if random.random() > 0.5 else None,
                 'trx_type': np.random.choice(['transfer', 'deposit', 'withdrawal'], p=[0.6, 0.2, 0.2]),
                 'amount': round(amount, 2),
                 'currency': currency,
                 'channel': np.random.choice(['mobile', 'web', 'atm', 'branch'], p=[0.5, 0.3, 0.1, 0.1]),
                 'status': 'completed' if not is_fraud or random.random() > 0.7 else 'blocked',
-                'narration': fake.sentence(nb_words=6),
-                'reference_id': f"REF{trx_id:010d}",
+                'narration': fake.sentence(nb_words=20),
+                'reference_id': f"REF{fake.uuid4()[:10]}",
                 'device_ip': device_ip,
                 'geo_lat': geo_lat,
                 'geo_long': geo_long,
@@ -364,14 +366,154 @@ class FraudDataGenerator:
         random_seconds = random.randint(0, int(delta.total_seconds()))
         return start + timedelta(seconds=random_seconds)
 
-    def _insert_dataframe(self, cursor, table_name, df):
-        """Insert DataFrame into database table efficiently"""
-        if len(df) == 0:
-            return
+    def _insert_dataframe(self, cursor, table_name: str, df: pd.DataFrame):
+        """Insert dataframe into table with proper type conversion."""
 
-        columns = df.columns.tolist()
-        placeholders = ','.join(['%s'] * len(columns))
-        insert_query = f"INSERT INTO {table_name} ({','.join(columns)}) VALUES ({placeholders})"
+        # Create a copy to avoid modifying original
+        df = df.copy()
 
-        records = [tuple(row) for row in df.to_numpy()]
+        # Convert all columns to native Python types at once
+        for col in df.columns:
+            dtype = df[col].dtype
+
+            if pd.api.types.is_datetime64_any_dtype(dtype):
+                # Convert datetime64 to Python datetime
+                df[col] = df[col].dt.to_pydatetime()
+
+            elif pd.api.types.is_integer_dtype(dtype):
+                # Convert numpy int to Python int
+                df[col] = df[col].astype(object).where(df[col].notna(), None)
+
+            elif pd.api.types.is_float_dtype(dtype):
+                # Convert numpy float to Python float, handle NaN
+                df[col] = df[col].astype(object).where(df[col].notna(), None)
+
+            elif pd.api.types.is_bool_dtype(dtype):
+                # Convert numpy bool to Python bool
+                df[col] = df[col].astype(object).where(df[col].notna(), None)
+
+        # Build insert query
+        columns = ', '.join(df.columns)
+        placeholders = ', '.join(['%s'] * len(df.columns))
+        insert_query = f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})"
+
+        # Convert to list of tuples (now all Python native types)
+        records = [tuple(row) for row in df.values]
+
+        # Execute batch insert
         execute_batch(cursor, insert_query, records, page_size=1000)
+        print(f"Inserted {len(records)} records into {table_name}")
+
+    def push_to_db(self, conn_string, n_transactions=5000000):
+        """Push data directly to PostgreSQL database in batches"""
+        print(f"\n{'=' * 60}")
+        print(f"Starting data generation for {n_transactions:,} transactions")
+        print(f"Users: {self.n_users:,} | Period: {self.start_date.date()} to {self.end_date.date()}")
+        print(f"{'=' * 60}\n")
+
+        conn = psycopg2.connect(conn_string)
+        cursor = conn.cursor()
+
+        try:
+            # Generate and insert users
+            print("Generating and inserting users...")
+            users_df = self.generate_users()
+            self._insert_dataframe(cursor, 'users', users_df)
+            conn.commit()
+            print(f" Inserted {len(users_df):,} users\n")
+
+            # Generate and insert devices
+            print("Generating and inserting devices...")
+            devices_df = self.generate_devices()
+            self._insert_dataframe(cursor, 'devices', devices_df)
+            conn.commit()
+            print(f" Inserted {len(devices_df):,} devices\n")
+
+            # Generate and insert KYC submissions
+            print(" Generating and inserting KYC submissions...")
+            kyc_df = self.generate_kyc_submissions()
+            self._insert_dataframe(cursor, 'kyc_submissions', kyc_df)
+            conn.commit()
+            print(f" Inserted {len(kyc_df):,} KYC submissions\n")
+
+            # Generate and insert accounts
+            print(" Generating and inserting accounts...")
+            accounts_df = self.generate_accounts()
+            self._insert_dataframe(cursor, 'accounts', accounts_df)
+            conn.commit()
+            print(f"   ✓ Inserted {len(accounts_df):,} accounts\n")
+
+            # Generate and insert device IP history
+            print(" Generating and inserting device IP history...")
+            device_ip_df = self.generate_device_ip_history()
+            self._insert_dataframe(cursor, 'device_ip_history', device_ip_df)
+            conn.commit()
+            print(f" Inserted {len(device_ip_df):,} device IP records\n")
+
+            # Generate and insert transactions in batches
+            print(f" Generating and inserting {n_transactions:,} transactions...")
+            print(f"   (Batch size: {self.batch_size:,})\n")
+
+            batch_num = 0
+            total_inserted = 0
+            start_time = datetime.now()
+
+            for batch_df in self.generate_transactions_batch(n_transactions=n_transactions):
+                self._insert_dataframe(cursor, 'transactions', batch_df)
+                conn.commit()
+                batch_num += 1
+                total_inserted += len(batch_df)
+
+                elapsed = (datetime.now() - start_time).total_seconds()
+                rate = total_inserted / elapsed if elapsed > 0 else 0
+                eta_seconds = (n_transactions - total_inserted) / rate if rate > 0 else 0
+
+                print(
+                    f"   Batch {batch_num:4d}: {total_inserted:9,}/{n_transactions:,} ({100 * total_inserted / n_transactions:5.1f}%) | "
+                    f"Rate: {rate:,.0f} txn/s | ETA: {int(eta_seconds / 60):2d}m {int(eta_seconds % 60):2d}s")
+
+            total_time = (datetime.now() - start_time).total_seconds()
+            print(f"\n   ✓ Completed in {int(total_time / 60)}m {int(total_time % 60)}s\n")
+
+            # Print statistics
+            print(f"{'=' * 60}")
+            print("FINAL STATISTICS")
+            print(f"{'=' * 60}")
+
+            cursor.execute("SELECT COUNT(*), SUM(CASE WHEN is_fraud THEN 1 ELSE 0 END) FROM transactions")
+            total, fraud = cursor.fetchone()
+            print(f"Total transactions: {total:,}")
+            print(f"Fraudulent:         {fraud:,} ({100 * fraud / total:.2f}%)")
+            print(f"Legitimate:         {total - fraud:,} ({100 * (total - fraud) / total:.2f}%)")
+
+            cursor.execute("SELECT COUNT(DISTINCT source_account_id) FROM transactions")
+            active_accounts = cursor.fetchone()[0]
+            print(f"\nActive accounts:    {active_accounts:,}")
+            print(f"Avg txn/account:    {total / active_accounts:.1f}")
+
+            print(f"\n Data generation completed successfully!")
+            print(f"{'=' * 60}\n")
+
+        except Exception as e:
+            conn.rollback()
+            print(f"\n Error: {e}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
+
+if __name__ == "__main__":
+    # Database connection string
+    # Format: postgresql://username:password@host:port/database
+    conn_string = "postgresql://postgres:postgres@localhost:5432/boxyapp"
+
+    # Create generator for 5 million transactions
+    generator = FraudDataGenerator(
+        n_users=50000,  # 50K users
+        start_date='2023-01-01',  # 2-year period
+        end_date='2025-07-31'
+    )
+
+    # Push to database
+    generator.push_to_db(conn_string, n_transactions=5000000)
