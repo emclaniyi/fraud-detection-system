@@ -15,4 +15,4 @@ CREATE TABLE users(
 	signup_ts TIMESTAMPTZ,
 	signup_device VARCHAR(500)
 )
---DROP TABLE users CASCADE;
+DROP TABLE users CASCADE;
