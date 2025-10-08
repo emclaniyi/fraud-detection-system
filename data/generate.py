@@ -18,7 +18,7 @@ class FraudDataGenerator:
         self.n_users = n_users
         self.start_date = pd.to_datetime(start_date)
         self.end_date = pd.to_datetime(end_date)
-        self.batch_size = 10
+        self.batch_size = 100
         self.users = []
         self.accounts = []
         self.devices = []
@@ -163,7 +163,7 @@ class FraudDataGenerator:
 
         return pd.DataFrame(self.device_ip_history)
 
-    def generate_transactions_batch(self, n_transactions=5000000, start_trx_id=1, resume_date=None):
+    def generate_transactions_batch(self, n_transactions=5000000):
         """Generate transactions in batches for memory efficiency"""
         # create user spending profiles
         user_profiles = {}
@@ -179,13 +179,13 @@ class FraudDataGenerator:
             user_profiles[user['user_id']] = {
                 'baseline_amount_mu': random.uniform(2000, 50000),
                 'baseline_freq_per_day': random.uniform(0.5, 3.0) * risk_multiplier,
-                'home_lat': random.uniform(47.0, 55.0),
-                'home_long': random.uniform(6.0, 15.0),
+                'home_lat': random.uniform(47.0, 55.0),  # 🇩🇪 Germany lat range
+                'home_long': random.uniform(6.0, 15.0),  # 🇩🇪 Germany long range
                 'is_fraudster': random.random() < 0.03
             }
 
-        trx_id = start_trx_id
-        current_date = resume_date if resume_date else self.start_date
+        trx_id = 1
+        current_date = self.start_date
         transaction_batch = []
         recent_transactions = []
 
@@ -220,7 +220,11 @@ class FraudDataGenerator:
             is_fraud = False
             reason = None
 
-            # FRAUD PATTERN RULES
+            # -----------------------
+            # 🇩🇪 FRAUD PATTERN RULES
+            # -----------------------
+
+            # Pattern 1: High velocity
             recent_trx = [t for t in recent_transactions[-50:]
                           if t['source_account_id'] == source_account['account_id'] and
                           (trx_ts - t['created_at']).total_seconds() < 3600]
@@ -228,6 +232,7 @@ class FraudDataGenerator:
                 is_fraud = True
                 reason = "High transaction velocity within 1 hour."
 
+            # Pattern 2: Amount spike
             user_trx_amounts = [t['amount'] for t in recent_transactions
                                 if t['source_account_id'] == source_account['account_id']]
             if len(user_trx_amounts) > 10:
@@ -236,23 +241,28 @@ class FraudDataGenerator:
                     is_fraud = True
                     reason = "Amount spike above 3σ of normal pattern."
 
+            # Pattern 3: Blacklisted IP
             if device_ip in self.blacklisted_ips:
                 is_fraud = True
                 reason = "Transaction from blacklisted IP."
 
+            # Pattern 4: Known fraudster
             if profile['is_fraudster'] and random.random() < 0.4:
                 is_fraud = True
                 amount *= random.uniform(2, 5)
                 reason = "Known fraudster activity."
 
+            # 🇩🇪 Pattern 5: Structuring / Smurfing under €10K
             if 9000 <= amount < 10000 and len(recent_trx) >= 3:
                 is_fraud = True
                 reason = "Structuring — multiple transactions just below €10K threshold."
 
+            # 🇩🇪 Pattern 6: Large cash movement near €50K
             if 45000 <= amount < 50000 and len(recent_trx) > 2:
                 is_fraud = True
                 reason = "Suspicious large movement just below €50K."
 
+            # 🇩🇪 Pattern 7: Rapid turnaround (money in/out within 24h)
             if len(recent_trx) >= 2:
                 prev_trx_1 = recent_trx[-1]
                 prev_trx_2 = recent_trx[-2]
@@ -261,25 +271,30 @@ class FraudDataGenerator:
                     is_fraud = True
                     reason = "Rapid fund movement — deposits withdrawn within 24h."
 
+            # 🇩🇪 Pattern 8: Cross-border transaction to high-risk country
             country = random.choice(['DE', 'FR', 'NL', 'BE', 'AT', 'CH', 'RU', 'NG', 'UA', 'TR'])
             if country not in ['DE', 'FR', 'NL', 'BE', 'AT', 'CH'] and amount > 10000:
                 is_fraud = True
                 reason = f"Cross-border transfer to high-risk jurisdiction ({country})."
 
+            # 🇩🇪 Pattern 9: Device/IP reuse
             if self.device_ip_history.count(device_ip) > 5:
                 is_fraud = True
                 reason = "Shared device/IP address across multiple users."
 
+            # 🇩🇪 Pattern 10: Dormant account suddenly active
             account_age_days = (trx_ts - user['signup_ts']).days
             if len(recent_trx) == 1 and account_age_days > 180:
                 is_fraud = True
                 reason = "Dormant account suddenly active after long inactivity."
 
+            # 🇩🇪 Pattern 11: Unusual currency / FX behavior
             currency = random.choice(['EUR', 'USD', 'GBP', 'NGN'])
             if currency != 'EUR' and amount > 20000:
                 is_fraud = True
                 reason = f"Foreign currency ({currency}) transaction above €20K."
 
+            # 🇩🇪 Pattern 12: Failed KYC or mismatched selfie
             kyc_status = next((k['status'] for k in self.kyc_submissions if k['user_id'] == user['user_id']),
                               'approved')
             selfie_result = next(
@@ -288,6 +303,9 @@ class FraudDataGenerator:
                 is_fraud = True
                 reason = "KYC verification failed or mismatched selfie hash."
 
+            # -----------------------
+            # Create transaction
+            # -----------------------
             transaction = {
                 'trx_id': trx_id,
                 'source_account_id': source_account['account_id'],
@@ -319,13 +337,16 @@ class FraudDataGenerator:
 
             trx_id += 1
 
+            # Yield batch
             if len(transaction_batch) >= self.batch_size:
                 yield pd.DataFrame(transaction_batch)
                 transaction_batch = []
 
+            # Advance time occasionally
             if random.random() < 0.1:
                 current_date += timedelta(hours=1)
 
+        # Yield remaining transactions
         if transaction_batch:
             yield pd.DataFrame(transaction_batch)
 
@@ -347,94 +368,97 @@ class FraudDataGenerator:
 
     def _insert_dataframe(self, cursor, table_name: str, df: pd.DataFrame):
         """Insert dataframe into table with proper type conversion."""
+
+        # Create a copy to avoid modifying original
         df = df.copy()
 
+        # Convert all columns to native Python types at once
         for col in df.columns:
             dtype = df[col].dtype
 
             if pd.api.types.is_datetime64_any_dtype(dtype):
+                # Convert datetime64 to Python datetime
                 df[col] = df[col].dt.to_pydatetime()
+
             elif pd.api.types.is_integer_dtype(dtype):
-                df[col] = df[col].astype(object).where(df[col].notna(), None)
-            elif pd.api.types.is_float_dtype(dtype):
-                df[col] = df[col].astype(object).where(df[col].notna(), None)
-            elif pd.api.types.is_bool_dtype(dtype):
+                # Convert numpy int to Python int
                 df[col] = df[col].astype(object).where(df[col].notna(), None)
 
+            elif pd.api.types.is_float_dtype(dtype):
+                # Convert numpy float to Python float, handle NaN
+                df[col] = df[col].astype(object).where(df[col].notna(), None)
+
+            elif pd.api.types.is_bool_dtype(dtype):
+                # Convert numpy bool to Python bool
+                df[col] = df[col].astype(object).where(df[col].notna(), None)
+
+        # Build insert query
         columns = ', '.join(df.columns)
         placeholders = ', '.join(['%s'] * len(df.columns))
         insert_query = f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})"
 
+        # Convert to list of tuples (now all Python native types)
         records = [tuple(row) for row in df.values]
 
+        # Execute batch insert
         execute_batch(cursor, insert_query, records, page_size=1000)
         print(f"Inserted {len(records)} records into {table_name}")
 
     def push_to_db(self, conn_string, n_transactions=5000000):
-        """OPTIMIZED: Push data with minimal loading and faster inserts"""
+        """Push data directly to PostgreSQL database in batches"""
         print(f"\n{'=' * 60}")
-        print(f"🚀 OPTIMIZED DATA GENERATION")
-        print(f"Target: {n_transactions:,} transactions")
+        print(f"Starting data generation for {n_transactions:,} transactions")
+        print(f"Users: {self.n_users:,} | Period: {self.start_date.date()} to {self.end_date.date()}")
         print(f"{'=' * 60}\n")
 
         conn = psycopg2.connect(conn_string)
         cursor = conn.cursor()
 
         try:
-            print("⚡ Loading essential data (optimized)...\n")
+            # Generate and insert users
+            print("Generating and inserting users...")
+            users_df = self.generate_users()
+            self._insert_dataframe(cursor, 'users', users_df)
+            conn.commit()
+            print(f" Inserted {len(users_df):,} users\n")
 
-            # OPTIMIZED: Load only necessary columns
-            cursor.execute("SELECT user_id, signup_ts FROM users")
-            self.users = [{'user_id': row[0], 'signup_ts': row[1]} for row in cursor.fetchall()]
-            print(f"✓ Loaded {len(self.users):,} users (minimal columns)")
+            # Generate and insert devices
+            print("Generating and inserting devices...")
+            devices_df = self.generate_devices()
+            self._insert_dataframe(cursor, 'devices', devices_df)
+            conn.commit()
+            print(f" Inserted {len(devices_df):,} devices\n")
 
-            cursor.execute("SELECT account_id, user_id FROM accounts")
-            self.accounts = [{'account_id': row[0], 'user_id': row[1]} for row in cursor.fetchall()]
-            print(f"✓ Loaded {len(self.accounts):,} accounts (minimal columns)")
+            # Generate and insert KYC submissions
+            print(" Generating and inserting KYC submissions...")
+            kyc_df = self.generate_kyc_submissions()
+            self._insert_dataframe(cursor, 'kyc_submissions', kyc_df)
+            conn.commit()
+            print(f" Inserted {len(kyc_df):,} KYC submissions\n")
 
-            cursor.execute("SELECT device_id, user_id, ip_address FROM devices")
-            self.devices = [{'device_id': row[0], 'user_id': row[1], 'ip_address': row[2]} for row in cursor.fetchall()]
-            print(f"✓ Loaded {len(self.devices):,} devices (minimal columns)")
+            # Generate and insert accounts
+            print(" Generating and inserting accounts...")
+            accounts_df = self.generate_accounts()
+            self._insert_dataframe(cursor, 'accounts', accounts_df)
+            conn.commit()
+            print(f"   ✓ Inserted {len(accounts_df):,} accounts\n")
 
-            cursor.execute("SELECT user_id, status, risk_score, credit_score, selfie_hash_result FROM kyc_submissions")
-            self.kyc_submissions = [
-                {'user_id': row[0], 'status': row[1], 'risk_score': row[2],
-                 'credit_score': row[3], 'selfie_hash_result': row[4]}
-                for row in cursor.fetchall()
-            ]
-            print(f"✓ Loaded {len(self.kyc_submissions):,} KYC submissions (minimal columns)")
+            # Generate and insert device IP history
+            print(" Generating and inserting device IP history...")
+            device_ip_df = self.generate_device_ip_history()
+            self._insert_dataframe(cursor, 'device_ip_history', device_ip_df)
+            conn.commit()
+            print(f" Inserted {len(device_ip_df):,} device IP records\n")
 
-            cursor.execute("SELECT ip_address FROM device_ip_history")
-            self.device_ip_history = [row[0] for row in cursor.fetchall()]
-            print(f"✓ Loaded {len(self.device_ip_history):,} IP records (minimal)\n")
-
-            cursor.execute("SELECT COUNT(*) FROM transactions")
-            existing_count = cursor.fetchone()[0]
-
-            start_trx_id = 1
-            resume_date = None
-
-            if existing_count > 0:
-                cursor.execute("SELECT MAX(trx_id), MAX(created_at) FROM transactions")
-                last_id, last_date = cursor.fetchone()
-                start_trx_id = last_id + 1
-                resume_date = last_date
-                print(f"📊 Existing: {existing_count:,} transactions")
-                print(f"   ▶ Resuming from ID {start_trx_id:,} | Date: {last_date}\n")
-            else:
-                print(f"📊 Starting fresh (no existing transactions)\n")
-
-            print(f"⚡ Generating transactions (batch: {self.batch_size:,})...\n")
+            # Generate and insert transactions in batches
+            print(f" Generating and inserting {n_transactions:,} transactions...")
+            print(f"   (Batch size: {self.batch_size:,})\n")
 
             batch_num = 0
             total_inserted = 0
             start_time = datetime.now()
 
-            for batch_df in self.generate_transactions_batch(
-                    n_transactions=n_transactions,
-                    start_trx_id=start_trx_id,
-                    resume_date=resume_date
-            ):
+            for batch_df in self.generate_transactions_batch(n_transactions=n_transactions):
                 self._insert_dataframe(cursor, 'transactions', batch_df)
                 conn.commit()
                 batch_num += 1
@@ -442,23 +466,18 @@ class FraudDataGenerator:
 
                 elapsed = (datetime.now() - start_time).total_seconds()
                 rate = total_inserted / elapsed if elapsed > 0 else 0
-                current_total = start_trx_id - 1 + total_inserted
-                remaining = n_transactions - current_total
-                eta_seconds = remaining / rate if rate > 0 else 0
+                eta_seconds = (n_transactions - total_inserted) / rate if rate > 0 else 0
 
-                # Update every 10 batches to reduce console spam
-                if batch_num % 10 == 0 or batch_num == 1:
-                    print(
-                        f"   Batch {batch_num:4d}: {current_total:9,}/{n_transactions:,} "
-                        f"({100 * current_total / n_transactions:5.1f}%) | "
-                        f"Rate: {rate:,.0f} txn/s | ETA: {int(eta_seconds / 60):3d}m {int(eta_seconds % 60):2d}s")
+                print(
+                    f"   Batch {batch_num:4d}: {total_inserted:9,}/{n_transactions:,} ({100 * total_inserted / n_transactions:5.1f}%) | "
+                    f"Rate: {rate:,.0f} txn/s | ETA: {int(eta_seconds / 60):2d}m {int(eta_seconds % 60):2d}s")
 
             total_time = (datetime.now() - start_time).total_seconds()
-            print(f"\n✅ Completed in {int(total_time / 60)}m {int(total_time % 60)}s")
-            print(f"   Average rate: {total_inserted / total_time:,.0f} txn/s\n")
+            print(f"\n   ✓ Completed in {int(total_time / 60)}m {int(total_time % 60)}s\n")
 
+            # Print statistics
             print(f"{'=' * 60}")
-            print("📈 FINAL STATISTICS")
+            print("FINAL STATISTICS")
             print(f"{'=' * 60}")
 
             cursor.execute("SELECT COUNT(*), SUM(CASE WHEN is_fraud THEN 1 ELSE 0 END) FROM transactions")
@@ -471,25 +490,30 @@ class FraudDataGenerator:
             active_accounts = cursor.fetchone()[0]
             print(f"\nActive accounts:    {active_accounts:,}")
             print(f"Avg txn/account:    {total / active_accounts:.1f}")
-            print(f"\n{'=' * 60}\n")
+
+            print(f"\n Data generation completed successfully!")
+            print(f"{'=' * 60}\n")
 
         except Exception as e:
             conn.rollback()
-            print(f"\n❌ Error: {e}")
+            print(f"\n Error: {e}")
             raise
         finally:
             cursor.close()
             conn.close()
 
 
-
 if __name__ == "__main__":
+    # Database connection string
+    # Format: postgresql://username:password@host:port/database
     conn_string = "postgresql://postgres:postgres@localhost:5432/boxyapp"
 
+    # Create generator for 5 million transactions
     generator = FraudDataGenerator(
-        n_users=300000,
-        start_date='2020-01-01',
-        end_date='2025-10-07'
+        n_users=300000,  # 300K users
+        start_date='2020-01-01',  # 5-year period
+        end_date='2025-10-08'
     )
 
+    # Push to database
     generator.push_to_db(conn_string, n_transactions=5000000)
