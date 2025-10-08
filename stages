@@ -1,0 +1,26 @@
+
+STAGE 1 - DATA PREPROCESSING---->>>>
+
+DATA ANALYSIS - descriptive statistics
+DATA WRANGLING - duplicates, missing values
+DATA EXPLORATION - charts and graphs
+FEATURES ENGINEERING - importance features; dropping or binning
+IMBALANCED DATASETS
+DIMENSIONALITY REDUCTION - removing highly correlated variables
+
+
+
+STAGE 2 - MODEL BUILDING---->>>>
+
+REGRESSION/ CLASSIFICATION/ CLUSTERING
+ASSESSING MODEL PERFORMANCE - checking necessary metrics
+HYPERPARAMETER TUNING - improving model accuracy
+
+
+
+
+STAGE 3 - DEPLOYMENT---->>>
+
+MACHINE LEARNING PIPELINE
+AUTOMATED FEATURES ENGINEERING
+MODEL AS A SERVICE - APIs
